@@ -25,6 +25,6 @@ namespace BTCPayServer.Payments
         /// Change the payment destination (internal plumbing)
         /// </summary>
         /// <param name="newPaymentDestination"></param>
-        void SetPaymentDestination(string newPaymentDestination);
+        void SetPaymentDetails(IPaymentMethodDetails newPaymentMethodDetails);
     }
 }

@@ -25,10 +25,11 @@ namespace BTCPayServer.Services.Altcoins.Monero.Payments
             return 0.0m;
         }
 
-        public void SetPaymentDestination(string newPaymentDestination)
+        public void SetPaymentDetails(IPaymentMethodDetails newPaymentMethodDetails)
         {
-            DepositAddress = newPaymentDestination;
+            DepositAddress = newPaymentMethodDetails.GetPaymentDestination();
         }
+
         public long AccountIndex { get; set; }
         public long AddressIndex { get; set; }
         public string DepositAddress { get; set; }

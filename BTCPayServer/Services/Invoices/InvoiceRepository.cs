@@ -254,7 +254,7 @@ retry:
                     MarkUnassigned(invoiceId, invoiceEntity, context, currencyData.GetId());
                 }
 
-                existingPaymentMethod.SetPaymentDestination(paymentMethod.GetPaymentDestination());
+                existingPaymentMethod.SetPaymentDetails(paymentMethod);
                 currencyData.SetPaymentMethodDetails(existingPaymentMethod);
 #pragma warning disable CS0618
                 if (network.IsBTC)
