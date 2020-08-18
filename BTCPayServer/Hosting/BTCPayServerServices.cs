@@ -247,6 +247,7 @@ namespace BTCPayServer.Hosting
 
             services.AddSingleton<INotificationHandler, InvoiceEventNotification.Handler>();
             services.AddSingleton<INotificationHandler, PayoutNotification.Handler>();
+            services.AddSingleton<INotificationHandler, ExternalPayoutTransactionNotification.Handler>();
 
             services.TryAddSingleton<ExplorerClientProvider>();
             services.TryAddSingleton<Bitpay>(o =>

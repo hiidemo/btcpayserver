@@ -1,6 +1,9 @@
 using System;
+using System.Collections.Generic;
 using System.Threading.Tasks;
 using BTCPayServer.Data;
+using BTCPayServer.Models;
+using BTCPayServer.Models.WalletViewModels;
 using BTCPayServer.Payments;
 
 public interface IPayoutHandler
@@ -12,4 +15,6 @@ public interface IPayoutHandler
     void StartBackgroundCheck(Action<Type[]> subscribe);
     Task BackgroundCheck(object o);
     Task<decimal> GetMinimumPayoutAmount(PaymentMethodId paymentMethod, IClaimDestination claimDestination);
+    Dictionary<PayoutState, List<(string Action, string Text)>> GetPayoutSpecificActions();
+    Task<StatusMessageModel> DoSpecificAction(string action, string[] payoutIds, string storeId);
 }

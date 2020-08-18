@@ -18,6 +18,7 @@ namespace BTCPayServer.Data
         {
             get { return Id != null ? string.Format(CultureInfo.InvariantCulture, LinkTemplate, Id) : null; }
         }
+        public bool? Accounted { get; set; }//nullable to be backwards compatible. if null, accounted is true
         [JsonIgnore]
         public string Id { get { return TransactionId?.ToString(); } }
     }

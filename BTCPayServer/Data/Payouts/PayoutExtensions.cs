@@ -1,3 +1,4 @@
+using System;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
@@ -35,6 +36,25 @@ namespace BTCPayServer.Data
         public static void SetBlob(this PayoutData data, PayoutBlob blob, BTCPayNetworkJsonSerializerSettings serializers)
         {
             data.Blob = Encoding.UTF8.GetBytes(JsonConvert.SerializeObject(blob, serializers.GetSerializer(data.GetPaymentMethodId().CryptoCode)));
+        }
+
+        public static string GetStateString(this PayoutState state)
+        {
+            switch (state)
+            {
+                case PayoutState.AwaitingApproval:
+                    return "Awaiting Approval";
+                case PayoutState.AwaitingPayment:
+                    return "Awaiting Payment";
+                case PayoutState.InProgress:
+                    return "In Progress";
+                case PayoutState.Completed:
+                    return "Completed";
+                case PayoutState.Cancelled:
+                    return "Cancelled";
+                default:
+                    throw new ArgumentOutOfRangeException(nameof(state), state, null);
+            }
         }
         
     }

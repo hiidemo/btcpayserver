@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
@@ -8,8 +9,13 @@ using BTCPayServer.Data;
 using BTCPayServer.Events;
 using BTCPayServer.HostedServices;
 using BTCPayServer.Logging;
+using BTCPayServer.Models;
+using BTCPayServer.Models.WalletViewModels;
 using BTCPayServer.Payments;
 using BTCPayServer.Services;
+using BTCPayServer.Services.Notifications;
+using BTCPayServer.Services.Notifications.Blobs;
+using Microsoft.AspNetCore.Routing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using NBitcoin;
@@ -26,16 +32,18 @@ public class BitcoinLikePayoutHandler : IPayoutHandler
     private readonly BTCPayNetworkJsonSerializerSettings _jsonSerializerSettings;
     private readonly ApplicationDbContextFactory _dbContextFactory;
     private readonly EventAggregator _eventAggregator;
+    private readonly NotificationSender _notificationSender;
 
     public BitcoinLikePayoutHandler(BTCPayNetworkProvider btcPayNetworkProvider,
         ExplorerClientProvider explorerClientProvider, BTCPayNetworkJsonSerializerSettings jsonSerializerSettings,
-        ApplicationDbContextFactory dbContextFactory, EventAggregator eventAggregator)
+        ApplicationDbContextFactory dbContextFactory, EventAggregator eventAggregator, NotificationSender notificationSender)
     {
         _btcPayNetworkProvider = btcPayNetworkProvider;
         _explorerClientProvider = explorerClientProvider;
         _jsonSerializerSettings = jsonSerializerSettings;
         _dbContextFactory = dbContextFactory;
         _eventAggregator = eventAggregator;
+        _notificationSender = notificationSender;
     }
 
     public bool CanHandle(PaymentMethodId paymentMethod)
@@ -117,6 +125,77 @@ public class BitcoinLikePayoutHandler : IPayoutHandler
     }
 
 
+    public Dictionary<PayoutState, List<(string Action, string Text)>> GetPayoutSpecificActions()
+    {
+        return new Dictionary<PayoutState, List<(string Action, string Text)>>()
+        {
+            {PayoutState.AwaitingPayment, new List<(string Action, string Text)>()
+            {
+                ("confirm-payment", "Confirm payouts as paid"),
+                ("reject-payment", "Reject payout transaction")
+            }}
+        };
+    }
+
+    public async Task<StatusMessageModel> DoSpecificAction(string action, string[] payoutIds, string storeId)
+    {
+        switch (action)
+        {
+            case "confirm-payment":
+                await using (var context = _dbContextFactory.CreateContext())
+                {
+                    var payouts = (await context.Payouts
+                            .Include(p => p.PullPaymentData)
+                            .Include(p => p.PullPaymentData.StoreData)
+                            .Where(p => payoutIds.Contains(p.Id))
+                            .Where(p => p.PullPaymentData.StoreId == storeId && !p.PullPaymentData.Archived && p.State == PayoutState.AwaitingPayment)
+                            .ToListAsync()).Where(data => CanHandle(PaymentMethodId.Parse(data.PaymentMethodId)))
+                        .Select(data => (data, ParseProof(data) as PayoutTransactionOnChainBlob)).Where(tuple=> tuple.Item2 != null && tuple.Item2.TransactionId != null && tuple.Item2.Accounted == false);
+                    foreach (var valueTuple in payouts)
+                    {
+                        valueTuple.Item2.Accounted = true;
+                        valueTuple.data.State = PayoutState.InProgress;
+                        SetProofBlob(valueTuple.data, valueTuple.Item2);
+                    }
+                    await context.SaveChangesAsync();
+                }
+
+                return new StatusMessageModel()
+                {
+                    Message = "Payout payments have been marked confirmed",
+                    Severity = StatusMessageModel.StatusSeverity.Success
+                };
+            case "reject-payment":
+                await using (var context = _dbContextFactory.CreateContext())
+                {
+                    var payouts = (await context.Payouts
+                            .Include(p => p.PullPaymentData)
+                            .Include(p => p.PullPaymentData.StoreData)
+                            .Where(p => payoutIds.Contains(p.Id))
+                            .Where(p => p.PullPaymentData.StoreId == storeId && !p.PullPaymentData.Archived && p.State == PayoutState.AwaitingPayment)
+                            .ToListAsync()).Where(data => CanHandle(PaymentMethodId.Parse(data.PaymentMethodId)))
+                        .Select(data => (data, ParseProof(data) as PayoutTransactionOnChainBlob)).Where(tuple=> tuple.Item2 != null && tuple.Item2.TransactionId != null && tuple.Item2.Accounted == true);
+                    foreach (var valueTuple in payouts)
+                    {
+                        valueTuple.Item2.TransactionId = null;
+                        SetProofBlob(valueTuple.data, valueTuple.Item2);
+                    }
+                    await context.SaveChangesAsync();
+                }
+                return new StatusMessageModel()
+                {
+                    Message = "Payout payments have been unmarked",
+                    Severity = StatusMessageModel.StatusSeverity.Success
+                };
+        }
+
+        return new StatusMessageModel()
+        {
+            Message = "Unknown action",
+            Severity = StatusMessageModel.StatusSeverity.Error
+        };;
+    }
+
     private async Task UpdatePayoutsInProgress()
     {
         try
@@ -131,7 +210,7 @@ public class BitcoinLikePayoutHandler : IPayoutHandler
             {
                 var proof = ParseProof(payout) as PayoutTransactionOnChainBlob;
                 var payoutBlob = payout.GetBlob(this._jsonSerializerSettings);
-                if (proof is null)
+                if (proof is null || proof.Accounted is false)
                 {
                     continue;
                 }
@@ -183,7 +262,7 @@ public class BitcoinLikePayoutHandler : IPayoutHandler
 
                 if (payout.State == PayoutState.Completed)
                     proof.Candidates = null;
-                SetProofBlob(payout, proof, this._jsonSerializerSettings);
+                SetProofBlob(payout, proof);
             }
 
             await ctx.SaveChangesAsync();
@@ -234,25 +313,40 @@ public class BitcoinLikePayoutHandler : IPayoutHandler
                 if (!payoutByDestination.TryGetValue(destination.Key, out var payout))
                     continue;
                 var payoutBlob = payout.GetBlob(_jsonSerializerSettings);
-                //this is dangerous, a merchant may send an incorrect amount and this would just completely ignore it 
                 if (destination.Value != payoutBlob.CryptoAmount)
                     continue;
                 var proof = ParseProof(payout) as PayoutTransactionOnChainBlob;
                 if (proof is null)
                 {
-                    proof = new PayoutTransactionOnChainBlob();
+                    proof = new PayoutTransactionOnChainBlob()
+                    {
+                        Accounted = !(newTransaction.NewTransactionEvent.TrackedSource is AddressTrackedSource ),
+                    };
                 }
                 var txId = newTransaction.NewTransactionEvent.TransactionData.TransactionHash;
                 if (proof.Candidates.Add(txId))
                 {
-                    payout.State = PayoutState.InProgress;
+                    if (proof.Accounted is true)
+                    {
+                        payout.State = PayoutState.InProgress;
+                        _eventAggregator.Publish(new UpdateTransactionLabel(
+                            new WalletId(payout.PullPaymentData.StoreId, newTransaction.CryptoCode),
+                            newTransaction.NewTransactionEvent.TransactionData.TransactionHash,
+                            ("#3F88AF", "Payout")));
+                    }
+                    else
+                    {
+                        await _notificationSender.SendNotification(new StoreScope(payout.PullPaymentData.StoreId), new ExternalPayoutTransactionNotification()
+                        {
+                            PaymentMethod = payout.PaymentMethodId,
+                            PayoutId = payout.Id,
+                            StoreId = payout.PullPaymentData.StoreId
+                        });
+                    }
                     if (proof.TransactionId is null)
                         proof.TransactionId = txId;
-                    SetProofBlob(payout, proof, _jsonSerializerSettings);
-                    _eventAggregator.Publish(new UpdateTransactionLabel(
-                        new WalletId(payout.PullPaymentData.StoreId, newTransaction.CryptoCode),
-                        newTransaction.NewTransactionEvent.TransactionData.TransactionHash,
-                        ("#3F88AF", "Payout")));
+                    SetProofBlob(payout, proof);
+                    
                 }
             }
 
@@ -264,9 +358,9 @@ public class BitcoinLikePayoutHandler : IPayoutHandler
         }
     }
     
-    public static void SetProofBlob(PayoutData data, PayoutTransactionOnChainBlob blob, BTCPayNetworkJsonSerializerSettings serializers)
+    private void SetProofBlob(PayoutData data, PayoutTransactionOnChainBlob blob)
     {
-        var bytes = Encoding.UTF8.GetBytes(JsonConvert.SerializeObject(blob, serializers.GetSerializer(data.GetPaymentMethodId().CryptoCode)));
+        var bytes = Encoding.UTF8.GetBytes(JsonConvert.SerializeObject(blob, _jsonSerializerSettings.GetSerializer(data.GetPaymentMethodId().CryptoCode)));
         // We only update the property if the bytes actually changed, this prevent from hammering the DB too much
         if (data.Proof is null || bytes.Length != data.Proof.Length || !bytes.SequenceEqual(data.Proof))
         {
