@@ -13,6 +13,8 @@ using DBriize;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using NBitcoin;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using Encoders = NBitcoin.DataEncoders.Encoders;
 using InvoiceData = BTCPayServer.Data.InvoiceData;
 
@@ -59,6 +61,7 @@ retry:
                 Networks = _Networks,
                 Version = InvoiceEntity.Lastest_Version,
                 InvoiceTime = DateTimeOffset.UtcNow,
+                Metadata = new InvoiceMetadata()
             };
         }
 
@@ -156,11 +159,11 @@ retry:
                     Id = invoice.Id,
                     Created = invoice.InvoiceTime,
                     Blob = ToBytes(invoice, null),
-                    OrderId = invoice.OrderId,
+                    OrderId = invoice.Metadata.OrderId,
 #pragma warning disable CS0618 // Type or member is obsolete
                     Status = invoice.StatusString,
 #pragma warning restore CS0618 // Type or member is obsolete
-                    ItemCode = invoice.ProductInformation.ItemCode,
+                    ItemCode = invoice.Metadata.ItemCode,
                     CustomerEmail = invoice.RefundMail,
                     Archived = false
                 });
@@ -192,10 +195,9 @@ retry:
 
             textSearch.Add(invoice.Id);
             textSearch.Add(invoice.InvoiceTime.ToString(CultureInfo.InvariantCulture));
-            textSearch.Add(invoice.ProductInformation.Price.ToString(CultureInfo.InvariantCulture));
-            textSearch.Add(invoice.OrderId);
-            textSearch.Add(ToString(invoice.BuyerInformation, null));
-            textSearch.Add(ToString(invoice.ProductInformation, null));
+            textSearch.Add(invoice.Price.ToString(CultureInfo.InvariantCulture));
+            textSearch.Add(invoice.Metadata.OrderId);
+            textSearch.Add(ToString(invoice.Metadata, null));
             textSearch.Add(invoice.StoreId);
 
             AddToTextSearch(invoice.Id, textSearch.ToArray());
@@ -549,10 +551,9 @@ retry:
             {
                 entity.Events = invoice.Events.OrderBy(c => c.Timestamp).ToList();
             }
-
-            if (!string.IsNullOrEmpty(entity.RefundMail) && string.IsNullOrEmpty(entity.BuyerInformation.BuyerEmail))
+            if (!string.IsNullOrEmpty(entity.RefundMail) && string.IsNullOrEmpty(entity.Metadata.BuyerEmail))
             {
-                entity.BuyerInformation.BuyerEmail = entity.RefundMail;
+                entity.Metadata.BuyerEmail = entity.RefundMail;
             }
             entity.Archived = invoice.Archived;
             return entity;
